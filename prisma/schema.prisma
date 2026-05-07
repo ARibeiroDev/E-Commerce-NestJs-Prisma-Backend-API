@@ -1,0 +1,162 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+// Get a free hosted Postgres database in seconds: `npx create-db`
+
+generator client {
+  provider     = "prisma-client"
+  output       = "../generated/prisma"
+  moduleFormat = "cjs"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+model User {
+  id                       String         @id @default(uuid())
+  username                 String         @unique
+  email                    String         @unique
+  password                 String
+  role                     Role           @default(USER)
+  cart                     Cart?
+  orders                   Order[]
+  isVerified               Boolean        @default(false)
+  isActive                 Boolean        @default(true)
+  refreshTokens            RefreshToken[]
+  emailVerificationToken   String?
+  emailVerificationExpires DateTime?
+  passwordResetToken       String?
+  passwordResetExpires     DateTime?
+  createdAt                DateTime       @default(now())
+  updatedAt                DateTime       @updatedAt
+}
+
+enum Role {
+  USER
+  ADMIN
+  SUPERADMIN
+}
+
+model RefreshToken {
+  id        String   @id @default(uuid())
+  token     String   @unique //Hashed Token
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  expiresAt DateTime
+  revoked   Boolean  @default(false)
+  createdAt DateTime @default(now())
+
+  @@index([userId])
+  @@index([token])
+}
+
+model Product {
+  id          String           @id @default(uuid())
+  title       String
+  slug        String           @unique
+  description String
+  images      String[]
+  category    Category         @relation(fields: [categoryId], references: [id], onDelete: Cascade)
+  categoryId  String
+  basePrice   Decimal          @db.Decimal(10, 2)
+  tags        String[]
+  featured    Boolean          @default(false)
+  variants    ProductVariant[]
+  createdAt   DateTime         @default(now())
+  updatedAt   DateTime         @updatedAt
+
+  @@index([featured])
+}
+
+model Category {
+  id       String    @id @default(uuid())
+  name     String    @unique
+  products Product[]
+}
+
+model ProductVariant {
+  id                 String      @id @default(uuid())
+  sku                String      @unique
+  size               String
+  color              String
+  stock              Int
+  reservedStock      Int         @default(0) // For order creation
+  discountPercentage Int?
+  finalPrice         Decimal     @db.Decimal(10, 2)
+  product            Product     @relation(fields: [productId], references: [id], onDelete: Cascade)
+  productId          String
+  orderItems         OrderItem[]
+  cartItems          CartItem[]
+
+  @@unique([productId, color, size])
+  @@index([productId])
+}
+
+model Cart {
+  id        String     @id @default(uuid())
+  user      User       @relation(fields: [userId], references: [id], onDelete: Cascade)
+  userId    String     @unique
+  items     CartItem[]
+  updatedAt DateTime   @updatedAt
+}
+
+model CartItem {
+  id             String         @id @default(uuid())
+  cart           Cart           @relation(fields: [cartId], references: [id], onDelete: Cascade)
+  cartId         String
+  productVariant ProductVariant @relation(fields: [variantId], references: [id])
+  variantId      String
+  quantity       Int
+
+  @@unique([cartId, variantId]) // Ensures the cart can't contain the same variant twice, instead updates quantity if product already exists in cart
+  @@index([cartId])
+  @@index([variantId])
+}
+
+model Order {
+  id                 String      @id @default(uuid())
+  user               User        @relation(fields: [userId], references: [id], onDelete: Restrict) // Protects order history
+  userId             String
+  status             OrderStatus @default(PENDING)
+  total              Decimal     @db.Decimal(10, 2)
+  expiresAt          DateTime? // Reservation stock timeout
+  shippingName       String
+  shippingPhone      String
+  shippingAddress    String
+  shippingCity       String
+  shippingPostalCode String
+  shippingCountry    String
+  paymentIntentId    String? // Stripe/Payment provider reference
+  items              OrderItem[]
+  createdAt          DateTime    @default(now())
+  updatedAt          DateTime    @updatedAt
+}
+
+enum OrderStatus {
+  PENDING
+  PAID
+  SHIPPED
+  DELIVERED
+  CANCELLED
+  REFUNDED
+}
+
+model OrderItem {
+  id             String         @id @default(uuid())
+  order          Order          @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  orderId        String
+  productVariant ProductVariant @relation(fields: [variantId], references: [id], onDelete: Restrict) // Prevents deleting a variant that has order history
+  variantId      String
+
+  // Snapshot fields - preserves history in case product details change
+  productName     String
+  variantSku      String
+  size            String
+  color           String
+  quantity        Int
+  priceAtPurchase Decimal @db.Decimal(10, 2)
+
+  @@index([orderId])
+  @@index([variantId])
+}

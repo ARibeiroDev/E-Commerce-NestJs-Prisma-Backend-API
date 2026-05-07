@@ -1,0 +1,42 @@
+// products/dto/product-query.dto.ts
+import {
+  IsOptional,
+  IsString,
+  IsBoolean,
+  IsArray,
+  IsIn,
+} from 'class-validator';
+import { Transform } from 'class-transformer';
+import { PaginationQueryDto } from '../../common/dtos/pagination-query.dto';
+
+export class ProductQueryDto extends PaginationQueryDto {
+  @IsOptional()
+  @IsString()
+  categoryId?: string;
+
+  @IsOptional()
+  @IsBoolean()
+  @Transform(({ value }) => value === 'true') // Parse query string to boolean
+  featured?: boolean;
+
+  @IsOptional()
+  @IsString()
+  title?: string;
+
+  @IsOptional()
+  @IsArray()
+  @Transform(({ value }) => {
+    if (!value) return [];
+    if (Array.isArray(value)) return value.map((v) => String(v));
+    return [String(value)];
+  })
+  tags?: string[];
+
+  @IsOptional()
+  @IsIn(['createdAt', 'price', 'title'])
+  sortBy?: 'createdAt' | 'price' | 'title';
+
+  @IsOptional()
+  @IsIn(['asc', 'desc'])
+  orderBy?: 'asc' | 'desc';
+}
