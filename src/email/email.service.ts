@@ -11,7 +11,7 @@ export class EmailService {
       apiKey: this.configService.get<string>('MAILSENDER_API_TOKEN')!,
     });
   }
-
+  // TODO: Change mail send service to resend or other service
   async sendVerificationEmail(email: string, token: string) {
     const from = new Sender(
       this.configService.get<string>('EMAIL_FROM')!,

@@ -251,20 +251,30 @@ export class AuthService {
       );
     }
 
-    // Generate Tokens
     const accessToken = this.generateAccessToken(user);
-    const refreshToken = this.generateRefreshToken(user);
 
-    // Store refresh token
-    await this.storeRefreshToken(user.id, refreshToken);
-
-    res.cookie('refreshToken', refreshToken, {
-      httpOnly: true,
-      secure: process.env.NODE_ENV === 'production',
-      sameSite: process.env.NODE_ENV === 'production' ? 'none' : 'lax',
-      path: '/',
-      maxAge: 7 * 24 * 60 * 60 * 1000,
+    // Creates db session first
+    const tokenRecord = await this.databaseService.refreshToken.create({
+      data: {
+        token: '', // Temporary
+        userId: user.id,
+        expiresAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
+      },
     });
+
+    // Generate JWT containing session id
+    const refreshToken = this.generateRefreshToken(user, tokenRecord.id);
+
+    const hashedToken = await bcrypt.hash(refreshToken, 10);
+
+    await this.databaseService.refreshToken.update({
+      where: { id: tokenRecord.id },
+      data: {
+        token: hashedToken,
+      },
+    });
+
+    this.setRefreshCookie(res, refreshToken);
 
     return {
       accessToken,
@@ -281,23 +291,33 @@ export class AuthService {
 
     if (!token) throw new UnauthorizedException('No refresh token found');
 
-    const payload = this.jwtService.verify<{ sub: string; jti: string }>(
-      token,
-      {
-        secret: this.configService.get<string>('REFRESH_SECRET'),
-      },
-    );
+    let payload: { sub: string; jti: string };
 
-    const userId = payload.sub;
-    const tokenId = payload.jti;
+    try {
+      payload = this.jwtService.verify(token, {
+        secret: this.configService.get<string>('REFRESH_SECRET'),
+      });
+    } catch {
+      throw new UnauthorizedException('Invalid refresh token');
+    }
+
+    const { sub: userId, jti: tokenId } = payload;
 
     // O(1) lookup instead of loop
     const storedToken = await this.databaseService.refreshToken.findUnique({
       where: { id: tokenId },
     });
 
-    // Token does not exist or already revoked
-    if (!storedToken || storedToken.revoked) {
+    // Token does not exist
+    if (!storedToken) {
+      throw new UnauthorizedException('Invalid refresh token');
+    }
+
+    // Token reuse detection
+    const isTokenMatch = await bcrypt.compare(token, storedToken.token);
+
+    if (!isTokenMatch) {
+      // Revoke all sessions
       await this.databaseService.refreshToken.updateMany({
         where: { userId },
         data: { revoked: true },
@@ -306,30 +326,72 @@ export class AuthService {
       throw new UnauthorizedException('Refresh token reuse detected');
     }
 
-    // Revoke current token (rotation)
-    await this.databaseService.refreshToken.update({
-      where: { id: tokenId },
-      data: { revoked: true },
-    });
+    // Already revoked
+    if (storedToken.revoked) {
+      throw new UnauthorizedException('Refresh token revoked');
+    }
+
+    // Expired token
+    if (storedToken.expiresAt < new Date()) {
+      throw new UnauthorizedException('Refresh token expired');
+    }
 
     const user = await this.databaseService.user.findUnique({
       where: { id: userId },
     });
 
-    if (!user) throw new UnauthorizedException('User not found');
+    if (!user || !user.isActive)
+      throw new UnauthorizedException('User not found or inactive');
+
+    // Rotation transaction
+    const result = await this.databaseService.$transaction(async (tx) => {
+      // Revoke old session
+      // Only one request can successfully revoke token, second request will fail safely, prevents duplicate refresh chains
+      const revokeResult = await tx.refreshToken.updateMany({
+        where: {
+          id: tokenId,
+          revoked: false,
+        },
+        data: {
+          revoked: true,
+        },
+      });
+
+      if (revokeResult.count === 0) {
+        throw new UnauthorizedException('Refresh token already used');
+      }
+
+      // Create new session
+      const newTokenRecord = await tx.refreshToken.create({
+        data: {
+          token: '',
+          userId: user.id,
+          expiresAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
+        },
+      });
+
+      const newRefreshToken = this.generateRefreshToken(
+        user,
+        newTokenRecord.id,
+      );
+
+      const hashedToken = await bcrypt.hash(newRefreshToken, 10);
+
+      await tx.refreshToken.update({
+        where: { id: newTokenRecord.id },
+        data: {
+          token: hashedToken,
+        },
+      });
+
+      return {
+        refreshToken: newRefreshToken,
+      };
+    });
 
     const newAccessToken = this.generateAccessToken(user);
-    const newRefreshToken = this.generateRefreshToken(user);
 
-    await this.storeRefreshToken(user.id, newRefreshToken);
-
-    res.cookie('refreshToken', newRefreshToken, {
-      httpOnly: true,
-      secure: process.env.NODE_ENV === 'production',
-      sameSite: process.env.NODE_ENV === 'production' ? 'none' : 'lax',
-      path: '/',
-      maxAge: 7 * 24 * 60 * 60 * 1000,
-    });
+    this.setRefreshCookie(res, result.refreshToken);
 
     return {
       accessToken: newAccessToken,
@@ -342,7 +404,7 @@ export class AuthService {
 
     // No refresh token
     if (!token) {
-      res.clearCookie('refreshToken', { path: '/' });
+      this.clearCookie(res);
       return { message: 'Logout successful' };
     }
 
@@ -361,7 +423,7 @@ export class AuthService {
       tokenId = payload.jti;
     } catch {
       // Invalid token, still treat as logged out
-      res.clearCookie('refreshToken', { path: '/' });
+      this.clearCookie(res);
       return { message: 'Logout successful' };
     }
 
@@ -373,7 +435,7 @@ export class AuthService {
       });
     }
 
-    res.clearCookie('refreshToken', { path: '/' });
+    this.clearCookie(res);
 
     return { message: 'Logout successful' };
   }
@@ -397,9 +459,10 @@ export class AuthService {
     });
   }
 
-  private generateRefreshToken(user: User) {
+  private generateRefreshToken(user: User, tokenId: string) {
     const payload = {
       sub: user.id,
+      jti: tokenId,
     };
 
     const refreshSecret = this.configService.get<string>('REFRESH_SECRET');
@@ -414,15 +477,22 @@ export class AuthService {
     });
   }
 
-  private async storeRefreshToken(userId: string, refreshToken: string) {
-    const hashedToken = await bcrypt.hash(refreshToken, 10);
+  private setRefreshCookie(res: Response, refreshToken: string) {
+    res.cookie('refreshToken', refreshToken, {
+      httpOnly: true,
+      secure: process.env.NODE_ENV === 'production',
+      sameSite: process.env.NODE_ENV === 'production' ? 'none' : 'lax',
+      path: '/',
+      maxAge: 7 * 24 * 60 * 60 * 1000,
+    });
+  }
 
-    await this.databaseService.refreshToken.create({
-      data: {
-        token: hashedToken,
-        userId,
-        expiresAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
-      },
+  private clearCookie(res: Response) {
+    res.clearCookie('refreshToken', {
+      httpOnly: true,
+      secure: process.env.NODE_ENV === 'production',
+      sameSite: process.env.NODE_ENV === 'production' ? 'none' : 'lax',
+      path: '/',
     });
   }
 }

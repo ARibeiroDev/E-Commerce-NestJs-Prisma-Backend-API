@@ -64,6 +64,7 @@ export class AuthController {
     return this.authService.login(loginDto, res);
   }
 
+  @Throttle({ default: { limit: 20, ttl: 60000 } }) // 1 minute
   @Post('refresh')
   async refreshTokens(
     @Req() req: Request,

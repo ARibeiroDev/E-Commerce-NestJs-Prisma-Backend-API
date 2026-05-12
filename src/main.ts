@@ -25,7 +25,7 @@ async function bootstrap() {
   const documentFactory = () =>
     SwaggerModule.createDocument(app, swaggerConfig);
 
-  SwaggerModule.setup('api', app, documentFactory);
+  SwaggerModule.setup('docs', app, documentFactory);
 
   app.useGlobalPipes(
     new ValidationPipe({
@@ -42,6 +42,7 @@ async function bootstrap() {
   app.use(cookieParser());
   app.useGlobalFilters(app.get(AllExceptionsFilter));
   app.useLogger(app.get(LoggerService));
+  app.setGlobalPrefix('api');
 
   await app.listen(configService.get<number>('PORT') ?? 3500);
 }

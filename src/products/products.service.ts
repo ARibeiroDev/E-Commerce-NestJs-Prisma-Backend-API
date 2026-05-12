@@ -7,7 +7,6 @@ import {
 import { CreateProductDto } from './dto/create-product.dto';
 import { UpdateProductDto } from './dto/update-product.dto';
 import { DatabaseService } from '../database/database.service';
-import { PaginationQueryDto } from '../common/dtos/pagination-query.dto';
 import { PaginatedResponse } from '../common/interfaces/paginated-response.interface';
 import { Prisma, Product, ProductVariant } from 'generated/prisma/client';
 import slugify from '@sindresorhus/slugify';
@@ -30,10 +29,7 @@ export class ProductsService {
   ) {}
 
   async findAll(
-    query: PaginationQueryDto & {
-      sortBy?: 'createdAt' | 'price' | 'title';
-      orderBy?: 'asc' | 'desc';
-    },
+    query: ProductQueryDto,
     filters?: {
       categoryId?: string;
       tags?: string[];

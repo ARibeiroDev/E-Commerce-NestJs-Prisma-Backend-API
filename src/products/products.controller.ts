@@ -37,7 +37,7 @@ export class ProductsController {
 
     const filters = { categoryId, tags, featured, title };
     return this.productsService.findAll(
-      { page, limit, sortBy, orderBy },
+      { page, limit, sortBy, orderBy, title },
       filters,
     );
   }

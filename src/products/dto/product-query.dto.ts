@@ -33,8 +33,8 @@ export class ProductQueryDto extends PaginationQueryDto {
   tags?: string[];
 
   @IsOptional()
-  @IsIn(['createdAt', 'price', 'title'])
-  sortBy?: 'createdAt' | 'price' | 'title';
+  @IsIn(['createdAt', 'basePrice', 'title'])
+  sortBy?: 'createdAt' | 'basePrice' | 'title';
 
   @IsOptional()
   @IsIn(['asc', 'desc'])
