@@ -1,5 +1,6 @@
 import {
   BadRequestException,
+  ForbiddenException,
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
@@ -8,6 +9,8 @@ import { Prisma, OrderStatus, Order } from 'generated/prisma/client';
 import { CreateOrderDto } from './dto/create-order.dto';
 import { PaginationQueryDto } from '../common/dtos/pagination-query.dto';
 import { PaginatedResponse } from '../common/interfaces/paginated-response.interface';
+import { Cron } from '@nestjs/schedule';
+import { LoggerService } from 'src/logger/logger.service';
 
 //Extract reservation TTL to constant
 const RESERVATION_TTL_MS = 15 * 60 * 1000;
@@ -31,7 +34,10 @@ type CartItemWithRelations = CartWithItems['items'][number];
 
 @Injectable()
 export class OrdersService {
-  constructor(private readonly databaseService: DatabaseService) {}
+  constructor(
+    private readonly databaseService: DatabaseService,
+    private readonly logger: LoggerService,
+  ) {}
 
   /**
    * Create order from cart
@@ -215,8 +221,8 @@ export class OrdersService {
     });
   }
 
-  // Cancel order manually
-  async cancelOrder(orderId: string) {
+  // Cancel order manually and restores items back to user's cart
+  async cancelOrder(userId: string, orderId: string) {
     return this.databaseService.$transaction(async (tx) => {
       const order = await tx.order.findUnique({
         where: { id: orderId },
@@ -227,11 +233,19 @@ export class OrdersService {
         throw new NotFoundException('Order not found');
       }
 
-      if (order.status !== OrderStatus.PENDING) {
-        throw new BadRequestException('Only pending orders can be cancelled');
+      if (order.userId !== userId) {
+        throw new ForbiddenException(
+          'You do not have permission to cancel this order',
+        );
       }
 
-      // Release reserved stock
+      if (order.status !== OrderStatus.PENDING) {
+        throw new BadRequestException(
+          'Only pending orders within the reservation window can be cancelled',
+        );
+      }
+
+      // Deduct reserved stock
       for (const item of order.items) {
         await tx.productVariant.update({
           where: { id: item.variantId },
@@ -243,40 +257,71 @@ export class OrdersService {
         });
       }
 
-      return tx.order.update({
+      // Move status to CANCELLED
+      await tx.order.update({
         where: { id: orderId },
-        data: {
-          status: OrderStatus.CANCELLED,
-        },
+        data: { status: OrderStatus.CANCELLED },
       });
+
+      // Locate or instantiate the user's cart
+      let cart = await tx.cart.findUnique({ where: { userId } });
+      if (!cart) {
+        cart = await tx.cart.create({ data: { userId } });
+      }
+
+      // Reconstruct cart items using the snapshot data from the order
+      for (const item of order.items) {
+        const existingCartItem = await tx.cartItem.findFirst({
+          where: {
+            cartId: cart.id,
+            variantId: item.variantId,
+          },
+        });
+
+        if (existingCartItem) {
+          await tx.cartItem.update({
+            where: { id: existingCartItem.id },
+            data: { quantity: existingCartItem.quantity + item.quantity },
+          });
+        } else {
+          await tx.cartItem.create({
+            data: {
+              cartId: cart.id,
+              variantId: item.variantId,
+              quantity: item.quantity,
+            },
+          });
+        }
+      }
+
+      return {
+        success: true,
+        message: 'Order successfully cancelled and cart items restored.',
+      };
     });
   }
 
-  // Expiration worker, race-safe
-  async releaseExpiredOrders() {
+  // Automated background cleaner for expired orders
+  @Cron('*/5 * * * *') // Every 5 minutes
+  async handleExpiredOrders() {
+    const now = new Date();
+
     const expiredOrders = await this.databaseService.order.findMany({
       where: {
         status: OrderStatus.PENDING,
-        expiresAt: { lt: new Date() },
+        expiresAt: { lt: now },
       },
-      select: { id: true },
+      include: { items: true },
     });
 
-    // Process in parallel
-    await Promise.all(
-      expiredOrders.map((order) =>
-        this.databaseService.$transaction(async (tx) => {
-          // Re-check inside transaction
-          const freshOrder = await tx.order.findUnique({
-            where: { id: order.id },
-            include: { items: true },
-          });
+    if (expiredOrders.length === 0) return;
 
-          if (!freshOrder || freshOrder.status !== OrderStatus.PENDING) {
-            return;
-          }
-
-          for (const item of freshOrder.items) {
+    for (const order of expiredOrders) {
+      try {
+        // Process each cancellation in isolated transactions so one bad order doesn't halt the whole loop
+        await this.databaseService.$transaction(async (tx) => {
+          // Deduct reserved stock
+          for (const item of order.items) {
             await tx.productVariant.update({
               where: { id: item.variantId },
               data: {
@@ -288,14 +333,48 @@ export class OrdersService {
           }
 
           await tx.order.update({
-            where: { id: freshOrder.id },
-            data: {
-              status: OrderStatus.CANCELLED,
-            },
+            where: { id: order.id },
+            data: { status: OrderStatus.CANCELLED },
           });
-        }),
-      ),
-    );
+
+          let cart = await tx.cart.findUnique({
+            where: { userId: order.userId },
+          });
+          if (!cart) {
+            cart = await tx.cart.create({ data: { userId: order.userId } });
+          }
+
+          for (const item of order.items) {
+            const existingCartItem = await tx.cartItem.findFirst({
+              where: { cartId: cart.id, variantId: item.variantId },
+            });
+
+            if (existingCartItem) {
+              await tx.cartItem.update({
+                where: { id: existingCartItem.id },
+                data: { quantity: existingCartItem.quantity + item.quantity },
+              });
+            } else {
+              await tx.cartItem.create({
+                data: {
+                  cartId: cart.id,
+                  variantId: item.variantId,
+                  quantity: item.quantity,
+                },
+              });
+            }
+          }
+        });
+        this.logger.log(
+          `[Cron] Auto-cancelled expired order: ${order.id}. Items returned to cart.`,
+        );
+      } catch (error: unknown) {
+        this.logger.log(
+          `[Cron] Error processing rollback for order ${order.id}:`,
+          (error as Error).message,
+        );
+      }
+    }
   }
 
   // TODO: Add filters, search by status, date, total amount

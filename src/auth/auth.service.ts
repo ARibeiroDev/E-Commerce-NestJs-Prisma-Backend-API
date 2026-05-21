@@ -399,6 +399,27 @@ export class AuthService {
     };
   }
 
+  async getMe(userId: string) {
+    const user = await this.databaseService.user.findUnique({
+      where: { id: userId },
+      select: {
+        id: true,
+        username: true,
+        email: true,
+        role: true,
+        isActive: true,
+        isVerified: true,
+        createdAt: true,
+      },
+    });
+
+    if (!user || !user.isActive) {
+      throw new UnauthorizedException('User not found or inactive');
+    }
+
+    return user;
+  }
+
   async logout(req: RefreshRequest, res: Response) {
     const token = req.cookies?.refreshToken;
 

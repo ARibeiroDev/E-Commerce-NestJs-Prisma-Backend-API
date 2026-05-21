@@ -1,8 +1,8 @@
 # ClothingCo API
 
-A scalable e-commerce backend API built with NestJS, Prisma, PostgreSQL, JWT authentication, role-based authorization, cart management, stock reservation, and order processing.
+A robust e-commerce REST API built with NestJS, Prisma, PostgreSQL, JWT authentication, role-based authorization, cart management, stock reservation, and order processing.
 
-This project was built as part of my backend learning journey and focuses on real-world backend architecture, transactional consistency, authentication flows, caching, and modular design.
+This project was built as part of my backend learning journey and focuses heavily on data integrity, concurrency management, secure authentication flows, and modular scalability.
 
 ---
 

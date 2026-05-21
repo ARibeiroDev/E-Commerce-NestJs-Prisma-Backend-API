@@ -15,7 +15,7 @@ import { ProductVariantDto } from './dto/create-variant.dto';
 import { UpdateVariantDto } from './dto/update-variant.dto';
 import { CACHE_MANAGER, Cache } from '@nestjs/cache-manager';
 import { ProductQueryDto } from './dto/product-query.dto';
-import { LoggerService } from 'src/logger/logger.service';
+import { LoggerService } from '../logger/logger.service';
 
 @Injectable()
 export class ProductsService {

@@ -15,6 +15,7 @@ import { CacheModule } from '@nestjs/cache-manager';
 import { LoggerModule } from './logger/logger.module';
 import { LoggerMiddleware } from './logger/middlewares/logger.middleware';
 import { AllExceptionsFilter } from './common/filters/all-exceptions.filter';
+import { ScheduleModule } from '@nestjs/schedule';
 
 @Module({
   imports: [
@@ -30,6 +31,7 @@ import { AllExceptionsFilter } from './common/filters/all-exceptions.filter';
         limit: 10,
       },
     ]),
+    ScheduleModule.forRoot(),
     ProductsModule,
     UsersModule,
     AuthModule,

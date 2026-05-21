@@ -64,8 +64,11 @@ export class OrdersController {
   }
 
   @Patch(':orderId/cancel')
-  async cancelOrder(@Param('orderId') orderId: string) {
-    return this.ordersService.cancelOrder(orderId);
+  async cancelOrder(
+    @CurrentUser() user: RequestUser,
+    @Param('orderId') orderId: string,
+  ) {
+    return this.ordersService.cancelOrder(user.id, orderId);
   }
 
   @Patch(':orderId/confirm')

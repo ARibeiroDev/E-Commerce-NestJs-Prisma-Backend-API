@@ -8,7 +8,13 @@ import { Prisma } from 'generated/prisma/client';
 
 // Strong types for cart items with stock info
 type CartItemWithStock = Prisma.CartItemGetPayload<{
-  include: { productVariant: { include: { product: true } } };
+  include: {
+    productVariant: {
+      include: {
+        product: true;
+      };
+    };
+  };
 }> & {
   availableStock: number;
   isAvailable: boolean;
@@ -67,7 +73,7 @@ export class CartService {
       throw new BadRequestException('Quantity must be at least 1');
     }
 
-    return this.databaseService.$transaction(async (tx) => {
+    await this.databaseService.$transaction(async (tx) => {
       // Fetch variant
       const variant = await tx.productVariant.findUnique({
         where: { sku },
@@ -97,13 +103,16 @@ export class CartService {
       this.validateStockFromVariant(variant, newQuantity);
 
       // Upsert cart item atomically
-      return tx.cartItem.upsert({
+      await tx.cartItem.upsert({
         where: { cartId_variantId: { cartId: cart.id, variantId: variant.id } },
         update: { quantity: newQuantity },
         create: { cartId: cart.id, variantId: variant.id, quantity },
         include: { productVariant: { include: { product: true } } },
       });
     });
+
+    // Return full cart instead of CartItem
+    return this.getUserCart(userId);
   }
 
   /**
@@ -136,11 +145,13 @@ export class CartService {
 
     this.validateStockFromVariant(variant, quantity);
 
-    return this.databaseService.cartItem.update({
+    await this.databaseService.cartItem.update({
       where: { id: item.id },
       data: { quantity },
       include: { productVariant: { include: { product: true } } },
     });
+
+    return this.getUserCart(userId);
   }
 
   //Remove item from cart
@@ -166,7 +177,8 @@ export class CartService {
 
     await this.databaseService.cartItem.delete({ where: { id: item.id } });
 
-    return { message: 'Item removed from cart' };
+    // Return full cart instead of message
+    return this.getUserCart(userId);
   }
 
   /**
@@ -182,7 +194,7 @@ export class CartService {
       return this.getUserCart(userId);
     }
 
-    return this.databaseService.$transaction(async (tx) => {
+    await this.databaseService.$transaction(async (tx) => {
       const cart = await tx.cart.upsert({
         where: { userId },
         update: {},
@@ -232,9 +244,8 @@ export class CartService {
           continue;
         }
       }
-
-      return this.getUserCart(userId);
     });
+    return this.getUserCart(userId);
   }
 
   // Clear entire cart
@@ -245,7 +256,7 @@ export class CartService {
       where: { cartId: cart.id },
     });
 
-    return { message: 'Cart cleared' };
+    return this.getUserCart(userId);
   }
 
   // Compute available stock (single source of truth)

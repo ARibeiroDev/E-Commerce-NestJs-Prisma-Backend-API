@@ -109,9 +109,13 @@ model CartItem {
   variantId      String
   quantity       Int
 
+  createdAt      DateTime       @default(now())
+  updatedAt      DateTime       @updatedAt
+
   @@unique([cartId, variantId]) // Ensures the cart can't contain the same variant twice, instead updates quantity if product already exists in cart
   @@index([cartId])
   @@index([variantId])
+  @@index([cartId, createdAt])
 }
 
 model Order {
