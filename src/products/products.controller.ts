@@ -23,6 +23,10 @@ import { Roles } from '../common/decorators/roles.decorator';
 import { RolesGuard } from '../common/guards/roles.guard';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { ApiBearerAuth } from '@nestjs/swagger';
+import {
+  CurrentUser,
+  type RequestUser,
+} from '../common/decorators/current-user.decorator';
 
 @Controller('products')
 export class ProductsController {
@@ -57,8 +61,11 @@ export class ProductsController {
   @UseGuards(JwtAuthGuard, RolesGuard)
   @Post()
   @HttpCode(HttpStatus.CREATED)
-  async create(@Body() createProductDto: CreateProductDto): Promise<Product> {
-    return this.productsService.create(createProductDto);
+  async create(
+    @Body() createProductDto: CreateProductDto,
+    @CurrentUser() user: RequestUser,
+  ): Promise<Product> {
+    return this.productsService.create(createProductDto, user.id);
   }
 
   @ApiBearerAuth()
@@ -69,8 +76,9 @@ export class ProductsController {
   async update(
     @Param('slug') slug: string,
     @Body() updateProductDto: UpdateProductDto,
+    @CurrentUser() user: RequestUser,
   ): Promise<Product> {
-    return this.productsService.update(slug, updateProductDto);
+    return this.productsService.update(slug, updateProductDto, user.id);
   }
 
   @ApiBearerAuth()
@@ -78,8 +86,11 @@ export class ProductsController {
   @UseGuards(JwtAuthGuard, RolesGuard)
   @Delete(':slug')
   @HttpCode(HttpStatus.NO_CONTENT)
-  async remove(@Param('slug') slug: string): Promise<void> {
-    await this.productsService.remove(slug);
+  async remove(
+    @Param('slug') slug: string,
+    @CurrentUser() user: RequestUser,
+  ): Promise<void> {
+    await this.productsService.remove(slug, user.id);
   }
 
   @ApiBearerAuth()
@@ -90,8 +101,9 @@ export class ProductsController {
   async addVariant(
     @Param('slug') slug: string,
     @Body() productVariantDto: ProductVariantDto,
+    @CurrentUser() user: RequestUser,
   ): Promise<ProductVariant> {
-    return this.productsService.addVariant(slug, productVariantDto);
+    return this.productsService.addVariant(slug, productVariantDto, user.id);
   }
 
   @ApiBearerAuth()
@@ -103,8 +115,14 @@ export class ProductsController {
     @Param('slug') slug: string,
     @Param('sku') sku: string,
     @Body() updateVariantDto: UpdateVariantDto,
+    @CurrentUser() user: RequestUser,
   ): Promise<ProductVariant> {
-    return this.productsService.updateVariant(slug, sku, updateVariantDto);
+    return this.productsService.updateVariant(
+      slug,
+      sku,
+      updateVariantDto,
+      user.id,
+    );
   }
 
   @ApiBearerAuth()
@@ -115,7 +133,8 @@ export class ProductsController {
   async deleteVariant(
     @Param('slug') slug: string,
     @Param('sku') sku: string,
+    @CurrentUser() user: RequestUser,
   ): Promise<void> {
-    await this.productsService.deleteVariant(slug, sku);
+    await this.productsService.deleteVariant(slug, sku, user.id);
   }
 }

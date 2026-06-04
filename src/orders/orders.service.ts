@@ -10,7 +10,7 @@ import { CreateOrderDto } from './dto/create-order.dto';
 import { PaginationQueryDto } from '../common/dtos/pagination-query.dto';
 import { PaginatedResponse } from '../common/interfaces/paginated-response.interface';
 import { Cron } from '@nestjs/schedule';
-import { LoggerService } from 'src/logger/logger.service';
+import { LoggerService } from '../logger/logger.service';
 
 //Extract reservation TTL to constant
 const RESERVATION_TTL_MS = 15 * 60 * 1000;

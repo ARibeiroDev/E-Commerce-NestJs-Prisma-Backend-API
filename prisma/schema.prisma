@@ -28,6 +28,7 @@ model User {
   emailVerificationExpires DateTime?
   passwordResetToken       String?
   passwordResetExpires     DateTime?
+  performedLogs            AuditLog[]
   createdAt                DateTime       @default(now())
   updatedAt                DateTime       @updatedAt
 }
@@ -163,4 +164,20 @@ model OrderItem {
 
   @@index([orderId])
   @@index([variantId])
+}
+
+model AuditLog {
+  id              String       @id  @default(uuid())
+  action          String       // USER_ROLE_UPDATED", "USER_DEACTIVATED"
+  actorId         String?      // Admin/SuperAdmin who did the action (nullable for system events)
+  actor           User?        @relation(fields: [actorId], references: [id], onDelete: SetNull) // SetNull keeps audit trail intact if user is deleted
+  targetId        String       // ID of affected resource
+  targetType      String       // Type of affected resource (USER, PRODUCT, ORDER)
+  oldValues       Json?        // Snapshot representation of old values
+  newValues       Json?        // Snapshot representation of new values
+  createdAt  DateTime @default(now())
+  
+  @@index([action])
+  @@index([actorId])
+  @@index([targetId])
 }

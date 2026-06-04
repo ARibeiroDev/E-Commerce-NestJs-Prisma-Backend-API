@@ -16,6 +16,8 @@ import { LoggerModule } from './logger/logger.module';
 import { LoggerMiddleware } from './logger/middlewares/logger.middleware';
 import { AllExceptionsFilter } from './common/filters/all-exceptions.filter';
 import { ScheduleModule } from '@nestjs/schedule';
+import { EventEmitterModule } from '@nestjs/event-emitter';
+import { AuditLogModule } from './audit-log/audit-log.module';
 
 @Module({
   imports: [
@@ -32,6 +34,7 @@ import { ScheduleModule } from '@nestjs/schedule';
       },
     ]),
     ScheduleModule.forRoot(),
+    EventEmitterModule.forRoot(), // Event emitter for audit logs
     ProductsModule,
     UsersModule,
     AuthModule,
@@ -41,6 +44,7 @@ import { ScheduleModule } from '@nestjs/schedule';
     CartModule,
     OrdersModule,
     LoggerModule,
+    AuditLogModule,
   ],
   controllers: [AppController],
   providers: [

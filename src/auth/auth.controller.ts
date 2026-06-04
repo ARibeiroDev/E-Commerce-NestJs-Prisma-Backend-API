@@ -7,6 +7,7 @@ import {
   UseGuards,
   Res,
   Req,
+  Param,
 } from '@nestjs/common';
 import { AuthService } from './auth.service';
 import { Throttle } from '@nestjs/throttler';
@@ -43,6 +44,12 @@ export class AuthController {
   @Get('me')
   async getMe(@CurrentUser() user: RequestUser) {
     return this.authService.getMe(user.id);
+  }
+
+  @UseGuards(JwtAuthGuard)
+  @Get(':id')
+  async getUserById(@Param('id') id: string) {
+    return this.authService.getUserById(id);
   }
 
   @Throttle({ default: { limit: 3, ttl: 3600000 } })

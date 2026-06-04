@@ -2,6 +2,7 @@ import { Transform, Type } from 'class-transformer';
 import {
   ArrayMinSize,
   IsArray,
+  IsBoolean,
   IsNumber,
   IsOptional,
   IsString,
@@ -95,6 +96,14 @@ export class CreateProductDto {
     return [String(value)];
   })
   tags?: string[];
+
+  @ApiPropertyOptional({
+    example: true,
+    description: 'Flag to feature product on homepage',
+  })
+  @IsBoolean()
+  @IsOptional()
+  featured?: boolean;
 
   @ApiProperty({
     type: () => ProductVariantDto,

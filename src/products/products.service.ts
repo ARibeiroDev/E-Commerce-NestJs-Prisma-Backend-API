@@ -16,6 +16,8 @@ import { UpdateVariantDto } from './dto/update-variant.dto';
 import { CACHE_MANAGER, Cache } from '@nestjs/cache-manager';
 import { ProductQueryDto } from './dto/product-query.dto';
 import { LoggerService } from '../logger/logger.service';
+import { EventEmitter2 } from '@nestjs/event-emitter';
+import { AuditLogEvent } from '../audit-log/events/audit-log.event';
 
 @Injectable()
 export class ProductsService {
@@ -26,6 +28,7 @@ export class ProductsService {
     private readonly databaseService: DatabaseService,
     private readonly logger: LoggerService,
     @Inject(CACHE_MANAGER) private cacheManager: Cache,
+    private readonly eventEmitter: EventEmitter2,
   ) {}
 
   async findAll(
@@ -72,7 +75,7 @@ export class ProductsService {
         skip,
         take: limit,
         orderBy: { [sortBy]: orderBy },
-        include: { variants: true }, // Fetch related variants for each product, under the hood Prisma performs a JOIN
+        include: { variants: true, category: true }, // Fetch related variants for each product, under the hood Prisma performs a JOIN
       }),
     ]);
 
@@ -119,7 +122,7 @@ export class ProductsService {
   }
 
   // ADMIN ROUTES
-  async create(createProductDto: CreateProductDto) {
+  async create(createProductDto: CreateProductDto, actorId: string) {
     const slug = this.generateSlug(createProductDto.title);
 
     const category = await this.databaseService.category.findUnique({
@@ -171,7 +174,7 @@ export class ProductsService {
 
     this.updateCacheVersion();
 
-    return this.databaseService.product.create({
+    const product = await this.databaseService.product.create({
       data: {
         ...createProductDto,
         tags: sanitizedTags,
@@ -185,11 +188,44 @@ export class ProductsService {
         variants: true,
       },
     });
+
+    // Strip out the variants from the response
+    const { variants: createdVariants, ...cleanProductData } = product;
+
+    this.eventEmitter.emit(
+      'audit.log',
+      new AuditLogEvent({
+        action: 'PRODUCT_CREATED',
+        actorId,
+        targetId: product.id,
+        targetType: 'PRODUCT',
+        newValues: cleanProductData,
+      }),
+    );
+
+    // Emit independent logs for cascading variants
+    if (createdVariants && createdVariants.length > 0) {
+      createdVariants.forEach((variant) => {
+        this.eventEmitter.emit(
+          'audit.log',
+          new AuditLogEvent({
+            action: 'VARIANT_CREATED',
+            actorId,
+            targetId: variant.id,
+            targetType: 'PRODUCT_VARIANT',
+            newValues: variant,
+          }),
+        );
+      });
+    }
+
+    return product;
   }
 
   async update(
     slug: string,
     updateProductDto: UpdateProductDto,
+    actorId: string,
   ): Promise<Product> {
     const product = await this.databaseService.product.findUnique({
       where: { slug },
@@ -210,7 +246,7 @@ export class ProductsService {
 
     this.updateCacheVersion();
 
-    return this.databaseService.product.update({
+    const updatedProduct = await this.databaseService.product.update({
       where: { slug },
       data: {
         ...productData,
@@ -218,11 +254,70 @@ export class ProductsService {
       },
       include: { variants: true },
     });
+
+    //eslint-disable-next-line @typescript-eslint/no-unused-vars
+    const { variants: updatedVariants, ...cleanUpdatedProductData } =
+      updatedProduct;
+
+    if (this.hasChanged(product, cleanUpdatedProductData)) {
+      this.eventEmitter.emit(
+        'audit.log',
+        new AuditLogEvent({
+          action: 'PRODUCT_UPDATED',
+          actorId,
+          targetId: updatedProduct.id,
+          targetType: 'PRODUCT',
+          oldValues: product, // Was pulled without includes, already clean
+          newValues: cleanUpdatedProductData,
+        }),
+      );
+    }
+
+    return updatedProduct;
   }
 
-  async remove(slug: string): Promise<Product> {
+  async remove(slug: string, actorId: string): Promise<Product> {
+    const product = await this.databaseService.product.findUnique({
+      where: { slug },
+      include: { variants: true }, // Included variants to safely snapshot them before cascade delete
+    });
+    if (!product) throw new NotFoundException('Product not found');
+
     this.updateCacheVersion();
-    return this.databaseService.product.delete({ where: { slug } });
+
+    const deletedProduct = await this.databaseService.product.delete({
+      where: { slug },
+    });
+
+    const { variants: deletedVariants, ...cleanDeletedProductData } = product;
+
+    this.eventEmitter.emit(
+      'audit.log',
+      new AuditLogEvent({
+        action: 'PRODUCT_DELETED',
+        actorId,
+        targetId: deletedProduct.id,
+        targetType: 'PRODUCT',
+        oldValues: cleanDeletedProductData,
+      }),
+    );
+
+    if (deletedVariants && deletedVariants.length > 0) {
+      deletedVariants.forEach((variant) => {
+        this.eventEmitter.emit(
+          'audit.log',
+          new AuditLogEvent({
+            action: 'VARIANT_DELETED',
+            actorId,
+            targetId: variant.id,
+            targetType: 'PRODUCT_VARIANT',
+            oldValues: variant,
+          }),
+        );
+      });
+    }
+
+    return deletedProduct;
   }
 
   async findVariant(sku: string): Promise<ProductVariant> {
@@ -251,6 +346,7 @@ export class ProductsService {
   async addVariant(
     slug: string,
     productVariantDto: ProductVariantDto,
+    actorId: string,
   ): Promise<ProductVariant> {
     const product = await this.databaseService.product.findUnique({
       where: { slug },
@@ -277,7 +373,7 @@ export class ProductsService {
 
     this.updateCacheVersion();
 
-    return this.databaseService.productVariant.create({
+    const newVariant = await this.databaseService.productVariant.create({
       data: {
         ...productVariantDto,
         color,
@@ -288,12 +384,26 @@ export class ProductsService {
         productId: product.id,
       },
     });
+
+    this.eventEmitter.emit(
+      'audit.log',
+      new AuditLogEvent({
+        action: 'VARIANT_CREATED',
+        actorId,
+        targetId: newVariant.id,
+        targetType: 'PRODUCT_VARIANT',
+        newValues: newVariant,
+      }),
+    );
+
+    return newVariant;
   }
 
   async updateVariant(
     slug: string,
     sku: string,
     updateVariantDto: UpdateVariantDto,
+    actorId: string,
   ): Promise<ProductVariant> {
     const product = await this.databaseService.product.findUnique({
       where: { slug },
@@ -330,7 +440,7 @@ export class ProductsService {
 
     this.updateCacheVersion();
 
-    return this.databaseService.productVariant.update({
+    const updatedVariant = await this.databaseService.productVariant.update({
       where: { sku },
       data: {
         ...updateVariantDto,
@@ -341,9 +451,29 @@ export class ProductsService {
         sku: newSku,
       },
     });
+
+    if (this.hasChanged(variant, updatedVariant)) {
+      this.eventEmitter.emit(
+        'audit.log',
+        new AuditLogEvent({
+          action: 'VARIANT_UPDATED',
+          actorId,
+          targetId: updatedVariant.id,
+          targetType: 'PRODUCT_VARIANT',
+          oldValues: variant,
+          newValues: updatedVariant,
+        }),
+      );
+    }
+
+    return updatedVariant;
   }
 
-  async deleteVariant(slug: string, sku: string): Promise<ProductVariant> {
+  async deleteVariant(
+    slug: string,
+    sku: string,
+    actorId: string,
+  ): Promise<ProductVariant> {
     const product = await this.databaseService.product.findUnique({
       where: { slug },
       include: { variants: true },
@@ -366,7 +496,22 @@ export class ProductsService {
 
     this.updateCacheVersion();
 
-    return this.databaseService.productVariant.delete({ where: { sku } });
+    const deletedVariant = await this.databaseService.productVariant.delete({
+      where: { sku },
+    });
+
+    this.eventEmitter.emit(
+      'audit.log',
+      new AuditLogEvent({
+        action: 'VARIANT_DELETED',
+        actorId,
+        targetId: deletedVariant.id,
+        targetType: 'PRODUCT_VARIANT',
+        oldValues: deletedVariant,
+      }),
+    );
+
+    return deletedVariant;
   }
 
   private calculateFinalPrice(basePrice: number, discount: number): number {
@@ -417,5 +562,53 @@ export class ProductsService {
     }_tags:${filters?.tags?.join(',') || 'none'}_featured:${
       filters?.featured ?? 'all'
     }_title:${title || 'all'}`;
+  }
+
+  private hasChanged(
+    oldValues: Record<string, any>,
+    newValues: Record<string, any>,
+  ): boolean {
+    if (!oldValues || !newValues) return true;
+
+    // Gather all unique keys from both
+    const keys = new Set([
+      ...Object.keys(oldValues),
+      ...Object.keys(newValues),
+    ]);
+
+    // Delete auto-updated timestamps
+    keys.delete('updatedAt');
+    keys.delete('createdAt');
+
+    for (const key of keys) {
+      let oldValue = oldValues[key];
+      let newValue = newValues[key];
+
+      // Treat null and undefined as equl for backend payloads
+      if (oldValue === null && newValue === undefined) continue;
+      if (oldValue === undefined && newValue === null) continue;
+
+      // Normalize Prisma Decimals to numbers
+      if (oldValue && typeof oldValue.toNumber === 'function')
+        oldValue = oldValue.toNumber();
+      if (newValue && typeof newValue.toNumber === 'function')
+        newValue = newValue.toNumber();
+
+      // Normalize JavaScript Date objects to timestamps
+      if (oldValue instanceof Date) oldValue = oldValue.getTime();
+      if (newValue instanceof Date) newValue = newValue.getTime();
+
+      // Handle Array comparison (e.g., tags, images)
+      if (Array.isArray(oldValue) && Array.isArray(newValue)) {
+        if (JSON.stringify(oldValue) !== JSON.stringify(newValue)) return true;
+        continue;
+      }
+
+      // If any remaining value differs, it's a genuine update
+      if (oldValue !== newValue) {
+        return true;
+      }
+    }
+    return false;
   }
 }

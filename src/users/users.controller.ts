@@ -18,11 +18,11 @@ import { UpdateUserDto } from './dto/update-user.dto';
 import { Roles } from 'src/common/decorators/roles.decorator';
 import { Role } from 'generated/prisma/enums';
 import { RolesGuard } from 'src/common/guards/roles.guard';
-import { PaginationQueryDto } from 'src/common/dtos/pagination-query.dto';
 import { PaginatedResponse } from 'src/common/interfaces/paginated-response.interface';
 import { UserResponse } from './interfaces/user-response.interface';
 import { AdminUpdateUserDto } from './dto/admin-update.dto';
 import { ApiBearerAuth } from '@nestjs/swagger';
+import { GetUsersQueryDto } from './dto/users-query.dto';
 
 @Controller('users')
 @UseGuards(JwtAuthGuard)
@@ -49,7 +49,7 @@ export class UsersController {
   @UseGuards(RolesGuard)
   @Get()
   getAllUsers(
-    @Query() query: PaginationQueryDto,
+    @Query() query: GetUsersQueryDto,
   ): Promise<PaginatedResponse<UserResponse>> {
     return this.usersService.getAllUsers(query);
   }
@@ -66,6 +66,7 @@ export class UsersController {
       admin.id,
       targetUserId,
       adminUpdateUserDto,
+      admin.role, // Strict validation check
     );
   }
 
