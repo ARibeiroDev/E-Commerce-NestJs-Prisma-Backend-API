@@ -1,4 +1,5 @@
 import {
+  ConflictException,
   ForbiddenException,
   Inject,
   Injectable,
@@ -18,11 +19,11 @@ import { ProductQueryDto } from './dto/product-query.dto';
 import { LoggerService } from '../logger/logger.service';
 import { EventEmitter2 } from '@nestjs/event-emitter';
 import { AuditLogEvent } from '../audit-log/events/audit-log.event';
+import { PrismaClientKnownRequestError } from 'generated/prisma/internal/prismaNamespace';
 
 @Injectable()
 export class ProductsService {
-  // Cache version, upon update, older versions won't be used
-  private cacheVersion = 1;
+  private readonly LIST_CACHE_VERSION_KEY = 'LIST_CACHE_VERSION';
 
   constructor(
     private readonly databaseService: DatabaseService,
@@ -38,32 +39,34 @@ export class ProductsService {
       tags?: string[];
       featured?: boolean;
       title?: string;
+      isArchived?: boolean;
     },
   ): Promise<PaginatedResponse<Product>> {
-    const cacheKey = this.generateProductsListCacheKey(query, filters);
+    const cacheKey = await this.generateProductsListCacheKey(query, filters);
 
     const getCachedData =
       await this.cacheManager.get<PaginatedResponse<Product>>(cacheKey);
 
     if (getCachedData) {
-      this.logger.log(`Cache HIT: ${cacheKey}`, 'CACHE'); // Cache hit, returns cached data
+      this.logger.log(`Cache HIT: ${cacheKey}`, 'CACHE');
       return getCachedData;
     }
 
-    this.logger.log(`Cache MISS: ${cacheKey}`, 'CACHE'); // Cache miss, returns fresh data from database
+    this.logger.log(`Cache MISS: ${cacheKey}`, 'CACHE');
 
     const page = query.page || 1;
     const limit = query.limit || 10;
     const skip = (page - 1) * limit;
 
-    // Prisma translates this into a SQL WHERE clause
     const where: Prisma.ProductWhereInput = {};
 
     if (filters?.categoryId) where.categoryId = filters.categoryId;
     if (filters?.featured !== undefined) where.featured = filters.featured;
     if (filters?.title)
       where.title = { contains: filters.title, mode: 'insensitive' };
-    if (filters?.tags?.length) where.tags = { hasSome: filters.tags }; // Prisma Array filter
+    if (filters?.tags?.length) where.tags = { hasSome: filters.tags };
+
+    where.isArchived = filters?.isArchived ?? false;
 
     const sortBy = query.sortBy || 'createdAt';
     const orderBy = query.orderBy || 'desc';
@@ -75,7 +78,7 @@ export class ProductsService {
         skip,
         take: limit,
         orderBy: { [sortBy]: orderBy },
-        include: { variants: true, category: true }, // Fetch related variants for each product, under the hood Prisma performs a JOIN
+        include: { variants: true, category: true },
       }),
     ]);
 
@@ -93,14 +96,13 @@ export class ProductsService {
       },
     };
 
-    // Set cache
     await this.cacheManager.set(cacheKey, responseResult, 30000);
 
     return responseResult;
   }
 
   async findOneBySlug(slug: string): Promise<Product> {
-    const cacheKey = `product_v${this.cacheVersion}_${slug}`;
+    const cacheKey = `product_${slug}`;
     const cachedProduct = await this.cacheManager.get<Product>(cacheKey);
 
     if (cachedProduct) {
@@ -116,6 +118,7 @@ export class ProductsService {
 
     if (!product) throw new NotFoundException('Product not found');
 
+    // Caching specific items for longer periods is now safe due to explicit invalidation
     await this.cacheManager.set(cacheKey, product, 30000);
 
     return product;
@@ -172,8 +175,6 @@ export class ProductsService {
       .map((url) => url.trim())
       .filter(Boolean);
 
-    this.updateCacheVersion();
-
     const product = await this.databaseService.product.create({
       data: {
         ...createProductDto,
@@ -189,7 +190,6 @@ export class ProductsService {
       },
     });
 
-    // Strip out the variants from the response
     const { variants: createdVariants, ...cleanProductData } = product;
 
     this.eventEmitter.emit(
@@ -203,7 +203,6 @@ export class ProductsService {
       }),
     );
 
-    // Emit independent logs for cascading variants
     if (createdVariants && createdVariants.length > 0) {
       createdVariants.forEach((variant) => {
         this.eventEmitter.emit(
@@ -219,6 +218,8 @@ export class ProductsService {
       });
     }
 
+    await this.invalidateListCache();
+
     return product;
   }
 
@@ -233,18 +234,14 @@ export class ProductsService {
 
     if (!product) throw new NotFoundException('Product not found');
 
-    // Default slug
     let newSlug = product.slug;
 
-    // Generate new slug if name changes
     if (updateProductDto.title && updateProductDto.title !== product.title) {
       newSlug = this.generateSlug(updateProductDto.title);
     }
 
     //eslint-disable-next-line @typescript-eslint/no-unused-vars
     const { variants, ...productData } = updateProductDto;
-
-    this.updateCacheVersion();
 
     const updatedProduct = await this.databaseService.product.update({
       where: { slug },
@@ -254,6 +251,12 @@ export class ProductsService {
       },
       include: { variants: true },
     });
+
+    await this.cacheManager.del(`product_${slug}`);
+    if (newSlug !== slug) {
+      await this.cacheManager.del(`product_${newSlug}`);
+    }
+    await this.invalidateListCache();
 
     //eslint-disable-next-line @typescript-eslint/no-unused-vars
     const { variants: updatedVariants, ...cleanUpdatedProductData } =
@@ -267,7 +270,7 @@ export class ProductsService {
           actorId,
           targetId: updatedProduct.id,
           targetType: 'PRODUCT',
-          oldValues: product, // Was pulled without includes, already clean
+          oldValues: product,
           newValues: cleanUpdatedProductData,
         }),
       );
@@ -279,15 +282,26 @@ export class ProductsService {
   async remove(slug: string, actorId: string): Promise<Product> {
     const product = await this.databaseService.product.findUnique({
       where: { slug },
-      include: { variants: true }, // Included variants to safely snapshot them before cascade delete
+      include: { variants: true },
     });
-    if (!product) throw new NotFoundException('Product not found');
+    if (!product || product.isArchived)
+      throw new NotFoundException('Product not found or already archived');
 
-    this.updateCacheVersion();
-
-    const deletedProduct = await this.databaseService.product.delete({
+    const deletedProduct = await this.databaseService.product.update({
       where: { slug },
+      data: { isArchived: true },
     });
+
+    await this.cacheManager.del(`product_${slug}`);
+
+    // Invalidate all child variants so they immediately show as archived/unavailable
+    if (product.variants && product.variants.length > 0) {
+      for (const variant of product.variants) {
+        await this.cacheManager.del(`variant_${variant.sku}`);
+      }
+    }
+
+    await this.invalidateListCache();
 
     const { variants: deletedVariants, ...cleanDeletedProductData } = product;
 
@@ -321,7 +335,7 @@ export class ProductsService {
   }
 
   async findVariant(sku: string): Promise<ProductVariant> {
-    const cacheKey = `variant_v${this.cacheVersion}_${sku}`;
+    const cacheKey = `variant_${sku}`;
     const cachedVariant = await this.cacheManager.get<ProductVariant>(cacheKey);
 
     if (cachedVariant) {
@@ -349,7 +363,7 @@ export class ProductsService {
     actorId: string,
   ): Promise<ProductVariant> {
     const product = await this.databaseService.product.findUnique({
-      where: { slug },
+      where: { slug, isArchived: false },
       include: { variants: true, category: true },
     });
 
@@ -371,8 +385,6 @@ export class ProductsService {
 
     const sku = this.generateSku(product.category.name, color, size);
 
-    this.updateCacheVersion();
-
     const newVariant = await this.databaseService.productVariant.create({
       data: {
         ...productVariantDto,
@@ -384,6 +396,10 @@ export class ProductsService {
         productId: product.id,
       },
     });
+
+    // Invalidate the parent product so the new variant shows up instantly on the product page
+    await this.cacheManager.del(`product_${slug}`);
+    await this.invalidateListCache();
 
     this.eventEmitter.emit(
       'audit.log',
@@ -438,8 +454,6 @@ export class ProductsService {
         ? this.generateSku(product.category.name, color, size)
         : variant.sku;
 
-    this.updateCacheVersion();
-
     const updatedVariant = await this.databaseService.productVariant.update({
       where: { sku },
       data: {
@@ -451,6 +465,13 @@ export class ProductsService {
         sku: newSku,
       },
     });
+
+    await this.cacheManager.del(`product_${slug}`); // Clear parent product
+    await this.cacheManager.del(`variant_${sku}`); // Clear old variant
+    if (newSku !== sku) {
+      await this.cacheManager.del(`variant_${newSku}`); // Clear new variant if sku changed
+    }
+    await this.invalidateListCache();
 
     if (this.hasChanged(variant, updatedVariant)) {
       this.eventEmitter.emit(
@@ -494,24 +515,35 @@ export class ProductsService {
       );
     }
 
-    this.updateCacheVersion();
+    try {
+      const deletedVariant = await this.databaseService.productVariant.delete({
+        where: { sku },
+      });
 
-    const deletedVariant = await this.databaseService.productVariant.delete({
-      where: { sku },
-    });
+      await this.cacheManager.del(`product_${slug}`); // Parent must be refreshed
+      await this.cacheManager.del(`variant_${sku}`);
+      await this.invalidateListCache();
 
-    this.eventEmitter.emit(
-      'audit.log',
-      new AuditLogEvent({
-        action: 'VARIANT_DELETED',
-        actorId,
-        targetId: deletedVariant.id,
-        targetType: 'PRODUCT_VARIANT',
-        oldValues: deletedVariant,
-      }),
-    );
+      this.eventEmitter.emit(
+        'audit.log',
+        new AuditLogEvent({
+          action: 'VARIANT_DELETED',
+          actorId,
+          targetId: deletedVariant.id,
+          targetType: 'PRODUCT_VARIANT',
+          oldValues: deletedVariant,
+        }),
+      );
 
-    return deletedVariant;
+      return deletedVariant;
+    } catch (error) {
+      if ((error as PrismaClientKnownRequestError).code === 'P2003') {
+        throw new ConflictException(
+          'Cannot delete this variant because it is attached to existing orders. You must archive the parent product instead.',
+        );
+      }
+      throw error;
+    }
   }
 
   private calculateFinalPrice(basePrice: number, discount: number): number {
@@ -536,19 +568,16 @@ export class ProductsService {
     return `${clean(category)}-${clean(color)}-${clean(size)}-${shortHash}`;
   }
 
-  private updateCacheVersion(): void {
-    this.cacheVersion++;
-    this.logger.log(`Cache version updated to v${this.cacheVersion}`, 'CACHE');
-  }
-
-  private generateProductsListCacheKey(
+  private async generateProductsListCacheKey(
     query: ProductQueryDto,
     filters?: {
       categoryId?: string;
       tags?: string[];
       featured?: boolean;
+      isArchived?: boolean;
     },
-  ): string {
+  ): Promise<string> {
+    const version = await this.getListCacheVersion();
     const {
       page = 1,
       limit = 10,
@@ -557,11 +586,31 @@ export class ProductsService {
       title,
     } = query;
 
-    return `products_v${this.cacheVersion}_page:${page}_limit:${limit}_sort:${sortBy}_${orderBy}_category:${
+    // Generate cache key
+    return `products_list_v${version}_page:${page}_limit:${limit}_sort:${sortBy}_${orderBy}_category:${
       filters?.categoryId || 'all'
     }_tags:${filters?.tags?.join(',') || 'none'}_featured:${
       filters?.featured ?? 'all'
-    }_title:${title || 'all'}`;
+    }_archived:${filters?.isArchived ?? false}_title:${title || 'all'}`;
+  }
+
+  private async getListCacheVersion(): Promise<number> {
+    const version = await this.cacheManager.get<number>(
+      this.LIST_CACHE_VERSION_KEY,
+    );
+    if (!version) {
+      const initial = Date.now();
+      // Set without TTL so it persists as long as the store allows
+      await this.cacheManager.set(this.LIST_CACHE_VERSION_KEY, initial, 0);
+      return initial;
+    }
+
+    return version;
+  }
+
+  private async invalidateListCache(): Promise<void> {
+    await this.cacheManager.set(this.LIST_CACHE_VERSION_KEY, Date.now(), 0);
+    this.logger.log('Products list cache invalidated', 'CACHE');
   }
 
   private hasChanged(
@@ -570,13 +619,11 @@ export class ProductsService {
   ): boolean {
     if (!oldValues || !newValues) return true;
 
-    // Gather all unique keys from both
     const keys = new Set([
       ...Object.keys(oldValues),
       ...Object.keys(newValues),
     ]);
 
-    // Delete auto-updated timestamps
     keys.delete('updatedAt');
     keys.delete('createdAt');
 
@@ -584,27 +631,22 @@ export class ProductsService {
       let oldValue = oldValues[key];
       let newValue = newValues[key];
 
-      // Treat null and undefined as equl for backend payloads
       if (oldValue === null && newValue === undefined) continue;
       if (oldValue === undefined && newValue === null) continue;
 
-      // Normalize Prisma Decimals to numbers
       if (oldValue && typeof oldValue.toNumber === 'function')
         oldValue = oldValue.toNumber();
       if (newValue && typeof newValue.toNumber === 'function')
         newValue = newValue.toNumber();
 
-      // Normalize JavaScript Date objects to timestamps
       if (oldValue instanceof Date) oldValue = oldValue.getTime();
       if (newValue instanceof Date) newValue = newValue.getTime();
 
-      // Handle Array comparison (e.g., tags, images)
       if (Array.isArray(oldValue) && Array.isArray(newValue)) {
         if (JSON.stringify(oldValue) !== JSON.stringify(newValue)) return true;
         continue;
       }
 
-      // If any remaining value differs, it's a genuine update
       if (oldValue !== newValue) {
         return true;
       }

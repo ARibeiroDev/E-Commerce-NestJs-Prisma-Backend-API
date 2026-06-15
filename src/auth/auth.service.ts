@@ -179,6 +179,15 @@ export class AuthService {
       throw new BadRequestException('Invalid or expired token');
     }
 
+    // Check if the new and old password match, prevents useless updates
+    const isSamePassword = await bcrypt.compare(newPassword, user.password);
+
+    if (isSamePassword) {
+      throw new BadRequestException(
+        'Your new password cannot be the same as your current password.',
+      );
+    }
+
     const newHashedPwd = await bcrypt.hash(newPassword, 10);
 
     // Transaction prevents race conditions and inconsistent state if one query fails
@@ -397,27 +406,6 @@ export class AuthService {
       accessToken: newAccessToken,
       user: { id: user.id, username: user.username, role: user.role },
     };
-  }
-
-  async getMe(userId: string) {
-    const user = await this.databaseService.user.findUnique({
-      where: { id: userId },
-      select: {
-        id: true,
-        username: true,
-        email: true,
-        role: true,
-        isActive: true,
-        isVerified: true,
-        createdAt: true,
-      },
-    });
-
-    if (!user || !user.isActive) {
-      throw new UnauthorizedException('User not found or inactive');
-    }
-
-    return user;
   }
 
   async logout(req: RefreshRequest, res: Response) {

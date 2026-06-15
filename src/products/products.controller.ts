@@ -36,10 +36,19 @@ export class ProductsController {
   async findAll(
     @Query() query: ProductQueryDto,
   ): Promise<PaginatedResponse<Product>> {
-    const { page, limit, categoryId, tags, featured, title, sortBy, orderBy } =
-      query;
+    const {
+      page,
+      limit,
+      categoryId,
+      tags,
+      featured,
+      title,
+      sortBy,
+      orderBy,
+      isArchived,
+    } = query;
 
-    const filters = { categoryId, tags, featured, title };
+    const filters = { categoryId, tags, featured, title, isArchived };
     return this.productsService.findAll(
       { page, limit, sortBy, orderBy, title },
       filters,

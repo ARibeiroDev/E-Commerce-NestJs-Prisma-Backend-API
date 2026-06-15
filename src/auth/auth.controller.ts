@@ -19,10 +19,6 @@ import { LoginLimitGuard } from './guards/login-limiter.guard';
 import { LoginDto } from './dto/login.dto';
 import type { Request, Response } from 'express';
 import { JwtAuthGuard } from './guards/jwt-auth.guard';
-import {
-  CurrentUser,
-  type RequestUser,
-} from 'src/common/decorators/current-user.decorator';
 
 @Controller('auth')
 export class AuthController {
@@ -38,12 +34,6 @@ export class AuthController {
   @Get('verify-email')
   async verifyEmail(@Query('token') token: string) {
     return this.authService.verifyEmail(token);
-  }
-
-  @UseGuards(JwtAuthGuard)
-  @Get('me')
-  async getMe(@CurrentUser() user: RequestUser) {
-    return this.authService.getMe(user.id);
   }
 
   @UseGuards(JwtAuthGuard)

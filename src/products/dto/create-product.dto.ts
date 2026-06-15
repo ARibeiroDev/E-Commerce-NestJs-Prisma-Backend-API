@@ -105,6 +105,14 @@ export class CreateProductDto {
   @IsOptional()
   featured?: boolean;
 
+  @ApiPropertyOptional({
+    example: true,
+    description: 'Flag to soft-delete product',
+  })
+  @IsBoolean()
+  @IsOptional()
+  isArchived?: boolean;
+
   @ApiProperty({
     type: () => ProductVariantDto,
     isArray: true,

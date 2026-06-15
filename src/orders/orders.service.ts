@@ -5,12 +5,15 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import { DatabaseService } from '../database/database.service';
-import { Prisma, OrderStatus, Order } from 'generated/prisma/client';
+import { Prisma, OrderStatus, Order, Role } from 'generated/prisma/client';
 import { CreateOrderDto } from './dto/create-order.dto';
 import { PaginationQueryDto } from '../common/dtos/pagination-query.dto';
 import { PaginatedResponse } from '../common/interfaces/paginated-response.interface';
 import { Cron } from '@nestjs/schedule';
 import { LoggerService } from '../logger/logger.service';
+import { RequestUser } from 'src/common/decorators/current-user.decorator';
+import { EventEmitter2 } from '@nestjs/event-emitter';
+import { AuditLogEvent } from '../audit-log/events/audit-log.event';
 
 //Extract reservation TTL to constant
 const RESERVATION_TTL_MS = 15 * 60 * 1000;
@@ -37,6 +40,7 @@ export class OrdersService {
   constructor(
     private readonly databaseService: DatabaseService,
     private readonly logger: LoggerService,
+    private readonly eventEmitter: EventEmitter2,
   ) {}
 
   /**
@@ -68,6 +72,14 @@ export class OrdersService {
 
       for (const item of cart.items) {
         total = total.plus(item.productVariant.finalPrice.mul(item.quantity));
+      }
+
+      // Apply shipping fees
+      const SHIPPING_THRESHOLD = new Prisma.Decimal(100);
+      const SHIPPING_FEE = new Prisma.Decimal(15);
+
+      if (total.lessThan(SHIPPING_THRESHOLD)) {
+        total = total.plus(SHIPPING_FEE);
       }
 
       // Reserve stock safely
@@ -301,6 +313,131 @@ export class OrdersService {
     });
   }
 
+  /**
+   * User initiated request for return/refund
+   */
+  async requestRefund(userId: string, orderId: string) {
+    const order = await this.databaseService.order.findUnique({
+      where: { id: orderId },
+    });
+
+    if (!order) {
+      throw new NotFoundException('Order not found');
+    }
+
+    if (order.userId !== userId) {
+      throw new ForbiddenException(
+        'You do not have permission to modify this order.',
+      );
+    }
+
+    // Explicitly casting checking list to resolve strict TS typing configurations
+    const refundableStatuses: OrderStatus[] = [
+      OrderStatus.PAID,
+      OrderStatus.SHIPPED,
+      OrderStatus.DELIVERED,
+    ];
+
+    if (!refundableStatuses.includes(order.status)) {
+      throw new BadRequestException(
+        'Refunds can only be requested for paid, shipped, or delivered orders.',
+      );
+    }
+
+    return this.databaseService.order.update({
+      where: { id: orderId },
+      data: { status: OrderStatus.REFUND_REQUESTED },
+    });
+  }
+
+  /**
+   * Secure Admin & Superadmin controlled status management switch
+   * Handles lifecycle logic, inventory restoration and immutable logging
+   */
+  async updateOrderStatus(
+    orderId: string,
+    targetStatus: OrderStatus,
+    adminId: string,
+  ) {
+    return this.databaseService.$transaction(async (tx) => {
+      const order = await tx.order.findUnique({
+        where: { id: orderId },
+        include: { items: true },
+      });
+
+      if (!order) throw new NotFoundException('Order not found');
+      const oldStatus = order.status;
+      if (oldStatus === targetStatus) return order;
+
+      // Terminal State Check
+      if (
+        oldStatus === OrderStatus.CANCELLED ||
+        oldStatus === OrderStatus.REFUNDED
+      ) {
+        throw new BadRequestException(
+          `Cannot change status from a terminal ${oldStatus} state.`,
+        );
+      }
+
+      // Restock processing upon Admin Return Approval
+      if (targetStatus === OrderStatus.REFUNDED) {
+        const validRefundStatuses: OrderStatus[] = [
+          OrderStatus.PAID,
+          OrderStatus.SHIPPED,
+          OrderStatus.DELIVERED,
+          OrderStatus.REFUND_REQUESTED,
+        ];
+
+        if (!validRefundStatuses.includes(oldStatus)) {
+          throw new BadRequestException(
+            'Only fulfilled, processing, or refund requested orders can be marked as refunded.',
+          );
+        }
+        for (const item of order.items) {
+          await tx.productVariant.update({
+            where: { id: item.variantId },
+            data: { stock: { increment: item.quantity } },
+          });
+        }
+      }
+
+      // Rollback logic for administrative manual cancellation
+      if (targetStatus === OrderStatus.CANCELLED) {
+        if (oldStatus !== OrderStatus.PENDING) {
+          throw new BadRequestException(
+            'Only pending orders can be cancelled.',
+          );
+        }
+        for (const item of order.items) {
+          await tx.productVariant.update({
+            where: { id: item.variantId },
+            data: { reservedStock: { decrement: item.quantity } },
+          });
+        }
+      }
+
+      const updatedOrder = await tx.order.update({
+        where: { id: orderId },
+        data: { status: targetStatus },
+        include: { items: true },
+      });
+
+      this.eventEmitter.emit(
+        'audit.log',
+        new AuditLogEvent({
+          action: 'ORDER_STATUS_UPDATED',
+          actorId: adminId,
+          targetId: orderId,
+          targetType: 'ORDER',
+          oldValues: { status: oldStatus },
+          newValues: { status: targetStatus },
+        }),
+      );
+
+      return updatedOrder;
+    });
+  }
+
   // Automated background cleaner for expired orders
   @Cron('*/5 * * * *') // Every 5 minutes
   async handleExpiredOrders() {
@@ -377,7 +514,6 @@ export class OrdersService {
     }
   }
 
-  // TODO: Add filters, search by status, date, total amount
   async getOrdersByUser(
     query: PaginationQueryDto & {
       sortBy?: 'createdAt' | 'status';
@@ -418,22 +554,31 @@ export class OrdersService {
     };
   }
 
-  async getOrderById(orderId: string) {
+  async getOrderById(orderId: string, user: RequestUser) {
     const order = await this.databaseService.order.findUnique({
       where: { id: orderId },
-      include: { items: true },
+      include: {
+        items: true,
+        user: { select: { username: true, email: true } },
+      },
     });
-
     if (!order) throw new NotFoundException('Order not found');
+
+    const isAdmin = user.role === Role.ADMIN || user.role === Role.SUPERADMIN;
+    if (order.userId !== user.id && !isAdmin)
+      throw new ForbiddenException(
+        'You do not have permission to view this order',
+      );
 
     return order;
   }
 
-  // TODO: Add filters, search by status, date, total amount
   async getAllOrders(
     query: PaginationQueryDto & {
       sortBy?: 'createdAt' | 'status';
       orderBy?: 'asc' | 'desc';
+      status?: OrderStatus;
+      search?: string;
     },
   ): Promise<PaginatedResponse<Order>> {
     const page = query.page || 1;
@@ -443,13 +588,37 @@ export class OrdersService {
     const sortBy = query.sortBy || 'createdAt';
     const orderBy = query.orderBy || 'desc';
 
+    const where: Prisma.OrderWhereInput = {};
+
+    if (query.status) where.status = query.status;
+
+    if (query.search) {
+      where.OR = [
+        { id: { contains: query.search, mode: 'insensitive' } },
+        { shippingName: { contains: query.search, mode: 'insensitive' } },
+        { shippingPhone: { contains: query.search, mode: 'insensitive' } },
+        {
+          user: {
+            OR: [
+              { username: { contains: query.search, mode: 'insensitive' } },
+              { email: { contains: query.search, mode: 'insensitive' } },
+            ],
+          },
+        },
+      ];
+    }
+
     const [totalItems, data] = await this.databaseService.$transaction([
-      this.databaseService.order.count(),
+      this.databaseService.order.count({ where }),
       this.databaseService.order.findMany({
+        where,
         skip,
         take: limit,
         orderBy: { [sortBy]: orderBy },
-        include: { items: true },
+        include: {
+          items: true,
+          user: { select: { id: true, username: true, email: true } },
+        },
       }),
     ]);
 

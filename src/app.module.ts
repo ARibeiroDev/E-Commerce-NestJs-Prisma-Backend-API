@@ -18,6 +18,7 @@ import { AllExceptionsFilter } from './common/filters/all-exceptions.filter';
 import { ScheduleModule } from '@nestjs/schedule';
 import { EventEmitterModule } from '@nestjs/event-emitter';
 import { AuditLogModule } from './audit-log/audit-log.module';
+import { AnalyticsModule } from './analytics/analytics.module';
 
 @Module({
   imports: [
@@ -45,6 +46,7 @@ import { AuditLogModule } from './audit-log/audit-log.module';
     OrdersModule,
     LoggerModule,
     AuditLogModule,
+    AnalyticsModule,
   ],
   controllers: [AppController],
   providers: [

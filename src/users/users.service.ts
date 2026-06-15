@@ -1,4 +1,5 @@
 import {
+  BadRequestException,
   ForbiddenException,
   Injectable,
   NotFoundException,
@@ -43,6 +44,14 @@ export class UsersService {
     const { username, password } = updateUserDto;
 
     const updateData: Partial<UpdateUserDto> = {};
+
+    // Check if the new and old username match, prevents useless updates
+    const isSameUsername = await this.databaseService.user.findUnique({
+      where: { username },
+    });
+
+    if (isSameUsername)
+      throw new BadRequestException("Can't update to the same username.");
 
     if (username) updateData.username = username;
     if (password) updateData.password = await bcrypt.hash(password, 10);

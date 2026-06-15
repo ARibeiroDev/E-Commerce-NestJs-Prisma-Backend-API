@@ -24,7 +24,7 @@ export class EmailService {
       throw new Error('EMAIL_FROM is not defined');
     }
 
-    const verificationLink = `${clientUrl}/api/auth/verify-email?token=${token}`;
+    const verificationLink = `${clientUrl}/verify-email?token=${token}`;
 
     const htmlContent = `
       <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
@@ -76,7 +76,7 @@ export class EmailService {
       throw new Error('EMAIL_FROM is not defined');
     }
 
-    const resetLink = `${clientUrl}/api/auth/reset-password?token=${token}`;
+    const resetLink = `${clientUrl}/reset-password?token=${token}`;
 
     const htmlContent = `
       <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">

@@ -1,4 +1,3 @@
-// products/dto/product-query.dto.ts
 import {
   IsOptional,
   IsString,
@@ -18,6 +17,11 @@ export class ProductQueryDto extends PaginationQueryDto {
   @IsBoolean()
   @Transform(({ value }) => value === 'true') // Parse query string to boolean
   featured?: boolean;
+
+  @IsOptional()
+  @IsBoolean()
+  @Transform(({ value }) => value === 'true')
+  isArchived?: boolean;
 
   @IsOptional()
   @IsString()

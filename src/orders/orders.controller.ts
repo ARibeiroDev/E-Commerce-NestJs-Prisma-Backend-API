@@ -16,7 +16,7 @@ import {
   type RequestUser,
 } from '../common/decorators/current-user.decorator';
 import type { PaginatedResponse } from '../common/interfaces/paginated-response.interface';
-import { Order, Role } from 'generated/prisma/client';
+import { Order, OrderStatus, Role } from 'generated/prisma/client';
 import { OrderQueryDto } from './dto/order-query.dto';
 import { RolesGuard } from '../common/guards/roles.guard';
 import { Roles } from '../common/decorators/roles.decorator';
@@ -54,13 +54,15 @@ export class OrdersController {
   async getAllOrders(
     @Query() query: OrderQueryDto,
   ): Promise<PaginatedResponse<Order>> {
-    const { page, limit, sortBy, orderBy } = query;
-    return this.ordersService.getAllOrders({ page, limit, sortBy, orderBy });
+    return this.ordersService.getAllOrders(query);
   }
 
   @Get(':orderId')
-  async getOrderById(@Param('orderId') orderId: string) {
-    return this.ordersService.getOrderById(orderId);
+  async getOrderById(
+    @CurrentUser() user: RequestUser,
+    @Param('orderId') orderId: string,
+  ) {
+    return this.ordersService.getOrderById(orderId, user);
   }
 
   @Patch(':orderId/cancel')
@@ -71,11 +73,30 @@ export class OrdersController {
     return this.ordersService.cancelOrder(user.id, orderId);
   }
 
+  @Patch(':orderId/request-refund')
+  async requestRefund(
+    @CurrentUser() user: RequestUser,
+    @Param('orderId') orderId: string,
+  ) {
+    return this.ordersService.requestRefund(user.id, orderId);
+  }
+
   @Patch(':orderId/confirm')
   async confirmOrder(
     @Param('orderId') orderId: string,
     @Body('paymentIntentId') paymentIntentId: string,
   ) {
     return this.ordersService.confirmOrder(orderId, paymentIntentId);
+  }
+
+  @UseGuards(RolesGuard)
+  @Roles(Role.ADMIN, Role.SUPERADMIN)
+  @Patch(':orderId/status')
+  async updateOrderStatus(
+    @Param('orderId') orderId: string,
+    @Body('status') status: OrderStatus,
+    @CurrentUser() admin: RequestUser,
+  ) {
+    return this.ordersService.updateOrderStatus(orderId, status, admin.id);
   }
 }

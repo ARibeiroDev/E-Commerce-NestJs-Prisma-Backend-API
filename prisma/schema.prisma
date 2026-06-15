@@ -63,11 +63,13 @@ model Product {
   basePrice   Decimal          @db.Decimal(10, 2)
   tags        String[]
   featured    Boolean          @default(false)
+  isArchived  Boolean          @default(false)
   variants    ProductVariant[]
   createdAt   DateTime         @default(now())
   updatedAt   DateTime         @updatedAt
 
   @@index([featured])
+  @@index([isArchived])
 }
 
 model Category {
@@ -143,6 +145,7 @@ enum OrderStatus {
   PAID
   SHIPPED
   DELIVERED
+  REFUND_REQUESTED
   CANCELLED
   REFUNDED
 }
