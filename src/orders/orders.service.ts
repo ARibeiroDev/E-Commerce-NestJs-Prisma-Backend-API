@@ -5,7 +5,13 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import { DatabaseService } from '../database/database.service';
-import { Prisma, OrderStatus, Order, Role } from 'generated/prisma/client';
+import {
+  Prisma,
+  OrderStatus,
+  Order,
+  Role,
+  ProductVariant,
+} from 'generated/prisma/client';
 import { CreateOrderDto } from './dto/create-order.dto';
 import { PaginationQueryDto } from '../common/dtos/pagination-query.dto';
 import { PaginatedResponse } from '../common/interfaces/paginated-response.interface';
@@ -17,23 +23,6 @@ import { AuditLogEvent } from '../audit-log/events/audit-log.event';
 
 //Extract reservation TTL to constant
 const RESERVATION_TTL_MS = 15 * 60 * 1000;
-
-// Strong typing for cart with relations
-type CartWithItems = Prisma.CartGetPayload<{
-  include: {
-    items: {
-      include: {
-        productVariant: {
-          include: {
-            product: true;
-          };
-        };
-      };
-    };
-  };
-}>;
-
-type CartItemWithRelations = CartWithItems['items'][number];
 
 @Injectable()
 export class OrdersService {
@@ -70,8 +59,42 @@ export class OrdersService {
       // Calculate total
       let total = new Prisma.Decimal(0);
 
+      // Lock rows, calculate available stock and reserve stock
       for (const item of cart.items) {
         total = total.plus(item.productVariant.finalPrice.mul(item.quantity));
+
+        const variants: ProductVariant[] = await tx.$queryRaw`
+          SELECT id, stock, "reservedStock", sku 
+          FROM "ProductVariant" 
+          WHERE id = ${item.variantId} 
+          FOR UPDATE;
+          `;
+
+        if (!variants || variants.length === 0) {
+          throw new NotFoundException(
+            `Product variant ${item.variantId} not found.`,
+          );
+        }
+
+        const lockedVariant = variants[0];
+
+        const availableStock =
+          lockedVariant.stock - lockedVariant.reservedStock;
+
+        if (availableStock < item.quantity) {
+          throw new BadRequestException(
+            `Insufficient stock for SKU ${lockedVariant.sku}. Only ${availableStock} units available.`,
+          );
+        }
+
+        await tx.productVariant.update({
+          where: { id: item.variantId },
+          data: {
+            reservedStock: {
+              increment: item.quantity,
+            },
+          },
+        });
       }
 
       // Apply shipping fees
@@ -81,9 +104,6 @@ export class OrdersService {
       if (total.lessThan(SHIPPING_THRESHOLD)) {
         total = total.plus(SHIPPING_FEE);
       }
-
-      // Reserve stock safely
-      await this.reserveStockWithRetry(tx, cart.items);
 
       // Create order
       const order = await tx.order.create({
@@ -123,68 +143,6 @@ export class OrdersService {
 
       return order;
     });
-  }
-
-  /**
-   * Retry with fresh DB state each attempt
-   * - Prevents stale reservedStock usage
-   * - Makes retry actually meaningful
-   */
-  private async reserveStockWithRetry(
-    tx: Prisma.TransactionClient,
-    items: CartItemWithRelations[],
-    retries = 2,
-  ) {
-    for (let attempt = 0; attempt <= retries; attempt++) {
-      try {
-        for (const item of items) {
-          // Fetch fresh state every attempt
-          const freshVariant = await tx.productVariant.findUnique({
-            where: { id: item.variantId },
-            select: {
-              reservedStock: true,
-              sku: true,
-            },
-          });
-
-          if (!freshVariant) {
-            throw new Error('Variant not found');
-          }
-
-          const result = await tx.productVariant.updateMany({
-            where: {
-              id: item.variantId,
-              stock: {
-                gte: freshVariant.reservedStock + item.quantity,
-              },
-            },
-            data: {
-              reservedStock: {
-                increment: item.quantity,
-              },
-            },
-          });
-
-          if (result.count === 0) {
-            throw new Error(`Stock conflict for SKU ${freshVariant.sku}`);
-          }
-        }
-
-        return; // Success
-      } catch (error: unknown) {
-        // Logging for observability
-        console.warn('Stock reservation retry', {
-          attempt,
-          error,
-        });
-
-        if (attempt === retries) {
-          throw new BadRequestException(
-            'Some items are no longer available, please refresh your cart',
-          );
-        }
-      }
-    }
   }
 
   // Confirm order
