@@ -82,9 +82,14 @@ export class OrdersService {
           lockedVariant.stock - lockedVariant.reservedStock;
 
         if (availableStock < item.quantity) {
-          throw new BadRequestException(
-            `Insufficient stock for SKU ${lockedVariant.sku}. Only ${availableStock} units available.`,
-          );
+          // Pass structured error instead of simple string for frontend handling
+          throw new BadRequestException({
+            code: 'INSUFFICIENT_STOCK',
+            message: `Insufficient stock for SKU ${lockedVariant.sku}. Only ${availableStock} units available.`,
+            sku: lockedVariant.sku,
+            variantId: item.variantId,
+            availableStock,
+          });
         }
 
         await tx.productVariant.update({
