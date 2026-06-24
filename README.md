@@ -76,7 +76,7 @@ This project was built as part of my backend learning journey and focuses heavil
 - PostgreSQL
 - JWT
 - bcrypt
-- MailerSend
+- Resend
 - class-validator
 - class-transformer
 - cache-manager
@@ -87,6 +87,8 @@ This project was built as part of my backend learning journey and focuses heavil
 
 ```txt
 src/
+├── analytics/
+├── audit-log/
 ├── auth/
 ├── cart/
 ├── categories/
@@ -97,6 +99,9 @@ src/
 ├── orders/
 ├── products/
 ├── users/
+├── app.controller.ts
+├── app.module.ts
+├── app.service.ts
 └── main.ts
 ```
 
@@ -198,7 +203,6 @@ Orders reserve stock before payment confirmation to prevent overselling.
 
 Reservation logic includes:
 
-- Retry mechanisms
 - Expiration handling
 - Idempotent confirmation
 - Atomic Prisma transactions
@@ -237,3 +241,7 @@ Cache invalidation uses internal cache versioning.
 Built by Alberto Ribeiro
 
 Backend project built while learning modern backend engineering with NestJS and Prisma.
+
+# Live Demo
+
+[API SWAGGER DOCS](https://clothingco-api.onrender.com/docs)
