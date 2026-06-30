@@ -120,4 +120,51 @@ export class EmailService {
       throw error;
     }
   }
+
+  async sendContactSupportEmail(
+    fullName: string,
+    email: string,
+    message: string,
+  ) {
+    const from = this.configService.get<string>('EMAIL_FROM');
+    const supportEmail = this.configService.get<string>('SUPPORT_EMAIL');
+
+    if (!from || !supportEmail) {
+      throw new Error('EMAIL_FROM or SUPPORT_EMAIL is not defined');
+    }
+
+    const htmlContent = `
+      <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
+        <h2 style="color: #333;">New Support Request</h2>
+        <p><strong>From:</strong> ${fullName} (${email})</p>
+        <hr style="border: 1px solid #eaeaea; margin: 20px 0;" />
+        <h3 style="color: #666;">Message:</h3>
+        <p style="white-space: pre-wrap; color: #333;">${message}</p>
+      </div>`;
+
+    try {
+      const { data, error } = await this.resend.emails.send({
+        from: from,
+        to: supportEmail,
+        replyTo: email,
+        subject: `ClothingCo. - New Support Request from ${fullName}`,
+        html: htmlContent,
+      });
+      if (error) {
+        this.logger.error(
+          `Resend API Error sending from ${email}:`,
+          error.message,
+        );
+        throw new Error(error.message);
+      }
+
+      this.logger.log(`Support email sent from ${email}, (ID: ${data?.id})`);
+    } catch (error: any) {
+      this.logger.error(
+        `Failed to send support email from ${email}`,
+        (error as Error).message,
+      );
+      throw error;
+    }
+  }
 }
