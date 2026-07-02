@@ -11,9 +11,9 @@ export class EmailService {
     private readonly configService: ConfigService,
     private readonly logger: LoggerService,
   ) {
-    const apiKey = this.configService.get<string>('RESEND_AKI_KEY');
+    const apiKey = this.configService.get<string>('RESEND_API_KEY');
     if (!apiKey) {
-      throw new Error('RESEND_AKI_KEY is not defined');
+      throw new Error('RESEND_API_KEY is not defined');
     }
     this.resend = new Resend(apiKey);
   }

@@ -61,7 +61,7 @@ export class AllExceptionsFilter extends BaseExceptionFilter {
           message = 'Resource not found';
           break;
 
-        default: // Unkown error
+        default: // Unknown error
           statusCode = HttpStatus.INTERNAL_SERVER_ERROR;
           message = 'Database Error';
       }

@@ -50,7 +50,7 @@ export class UsersService {
       where: { username },
     });
 
-    if (isSameUsername)
+    if (isSameUsername && !password)
       throw new BadRequestException("Can't update to the same username.");
 
     if (username) updateData.username = username;
